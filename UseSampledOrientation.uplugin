@@ -2,10 +2,10 @@
 	"FileVersion": 3,
 	"Version": 1,
 	"VersionName": "1.0.0",
-	"FriendlyName": "UseSampledOrientation",
-	"Description": "",
+	"FriendlyName": "Use Sampled Orientation",
+	"Description": "When sampling, holograms take the orientation of the sampled object.",
 	"Category": "Modding",
-	"CreatedBy": "Eppifactory",
+	"CreatedBy": "Epp",
 	"CreatedByURL": "",
 	"DocsURL": "",
 	"MarketplaceURL": "",
@@ -25,7 +25,12 @@
 		{
 			"Name": "SML",
 			"Enabled": true,
-			"SemVersion": "^3.8.0-dev"
+			"SemVersion": "^3.8.0"
+		},
+		{
+			"Name": "AbstractInstance",
+			"Enabled": true,
+			"SemVersion": ""
 		}
 	],
 	"SemVersion": "1.0.0",
