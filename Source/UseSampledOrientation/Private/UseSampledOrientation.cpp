@@ -1,11 +1,19 @@
 #include "UseSampledOrientation.h"
 
 #include "AbstractInstanceManager.h"
+#include "FGBuildableConveyorBelt.h"
+#include "FGBuildablePipeBase.h"
+#include "FGBuildableRailroadTrack.h"
 #include "FGBuildGun.h"
 #include "FGBuildGunBuild.h"
+#include "FGConveyorBeltHologram.h"
+#include "FGConveyorPoleHologram.h"
 #include "FGHologram.h"
 #include "FGLightweightBuildableSubsystem.h"
-#include "FGSplineBuildableInterface.h"
+#include "FGPipelineHologram.h"
+#include "FGPipelineSupportHologram.h"
+#include "FGSplineHologram.h"
+#include "FGWallAttachmentHologram.h"
 #include "Patching/NativeHookManager.h"
 
 DEFINE_LOG_CATEGORY(LogUseSampledOrientation)
@@ -24,6 +32,28 @@ DEFINE_LOG_CATEGORY(LogUseSampledOrientation)
 #define USO_LOG(Verbosity, Format, ...)
 #endif
 
+
+void SetHologramRotationFromTransform(AFGHologram* hologram, FTransform desiredTransform)
+{
+    USO_LOG(Verbose, TEXT("SetHologramRotationFromTransform. Hologram is a %s with rotation step %d"), *hologram->GetClass()->GetName(), hologram->GetRotationStep());
+
+    USO_LOG(Verbose, TEXT("SetHologramRotationFromTransform. 1 Hologram has rotation %s, rotate value %d"),
+        *hologram->GetActorRotation().ToString(),
+        hologram->GetScrollRotateValue());
+
+    hologram->SetActorTransform(desiredTransform);
+
+    USO_LOG(Verbose, TEXT("SetHologramRotationFromTransform. 2 Hologram has rotation %s, rotate value %d"),
+        *hologram->GetActorRotation().ToString(),
+        hologram->GetScrollRotateValue());
+
+    hologram->UpdateRotationValuesFromTransform();
+
+    USO_LOG(Verbose, TEXT("SetHologramRotationFromTransform. 3 Hologram has rotation %s, rotate value %d"),
+        *hologram->GetActorRotation().ToString(),
+        hologram->GetScrollRotateValue());
+}
+
 void FUseSampledOrientationModule::StartupModule()
 {
     if (WITH_EDITOR)
@@ -38,17 +68,8 @@ void FUseSampledOrientationModule::StartupModule()
         UFGBuildGunState::OnRecipeSampled,
         [](auto& scope, UFGBuildGunState* buildGunState, TSubclassOf<class UFGRecipe> recipe)
         {
-            USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled!"));
-
+            // Resolve the actor at the hit result
             auto buildGun = buildGunState->GetBuildGun();
-            auto buildState = Cast<UFGBuildGunStateBuild>(buildGun->GetBuildGunStateFor(EBuildGunState::BGS_BUILD));
-            if (!buildState)
-            {
-                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. Could not the build state of the build gun??. Build gun state is: %s"), *buildGunState->GetClass()->GetName());
-                scope(buildGunState, recipe);
-                return;
-            }
-
             auto& hitResult = buildGun->GetHitResult();
             auto actor = hitResult.GetActor();
             if (actor && actor->IsA(AAbstractInstanceManager::StaticClass()))
@@ -63,94 +84,143 @@ void FUseSampledOrientationModule::StartupModule()
                 }
             }
 
-            if (!actor || Cast<AFGLightweightBuildableSubsystem>(actor) != nullptr || Cast<IFGSplineBuildableInterface>(actor) != nullptr)
+            USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. Actor is %s with transform %s."), *actor->GetClass()->GetName(), *actor->GetTransform().ToHumanReadableString());
+
+            scope(buildGunState, recipe);
+
+            if (!actor || Cast<AFGLightweightBuildableSubsystem>(actor) != nullptr)
             {
-                // Either we couldn't resolve the actor or it's a lightweight buildable (like a foundation or a wall) or a spline (like a conveyor or pipeline).
-                // We'll just use the default behavior for all of these cases, because trying to align them with the sampled object is weird and usually unnecessary.
+                // Either we couldn't resolve the actor or it's a lightweight buildable (like a foundation or a wall).
+                // We'll just use the default behavior for these cases, because trying to align them with the sampled object is weird and usually unnecessary.
                 // - Foundations seem to have binary "snap staight or snap diagonal" behavior, instances in the world have inconsistent and changing yaws, and trying
                 //   to align automatically according to the game's internal values results in the "snap diagonal" behavior, which is the opposite of what we often want.
                 // - Walls must snap to foundations or other walls and do so readily no matter their rotation, so it usually doesn't matter at all and trying to "align"
                 //   while snapped doesn't alter them anyway.
-                // - Splines don't have a set orientation and how to find the orientation at a specific point is not at all clear to me from looking at the headers. It's
-                //   also largely not necessary because these are usually built by snapping between points anyway. In any case, default behavior isn't that bad.
-                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. Actor is %s, which is a special case we can't handle. Falling back to default behavior."), *actor->GetClass()->GetName());
-                scope(buildGunState, recipe);
+                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. Actor is %s, which is a special case we can't handle. Just using default behavior."), *actor->GetClass()->GetName());
                 return;
             }
 
-            auto desiredYaw = FMath::RoundToInt32(actor->GetActorRotation().Yaw);// Rotation in degrees around the z (vertical) axis
-            USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. Resolved actor is %s with rotation %s. Desired yaw is %d"), *actor->GetClass()->GetName(), *actor->GetActorRotation().ToString(), desiredYaw);
-
-            auto initialHologram = buildState->GetHologram();
-            if (!initialHologram)
+            auto buildState = Cast<UFGBuildGunStateBuild>(buildGun->GetBuildGunStateFor(EBuildGunState::BGS_BUILD));
+            if (!buildState)
             {
-                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. Not in build mode. Will enter build mode upon sample. Simply setting previous scroll rotation to desired yaw %d"), desiredYaw);
-                buildState->mPreviousScrollRotation = desiredYaw;
-                scope(buildGunState, recipe);
+                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. Could not get the build state of the build gun??. Build gun state is: %s"), *buildGunState->GetClass()->GetName());
                 return;
             }
 
-            scope(buildGunState, recipe);
-
-            auto currentHologram = buildState->GetHologram();
-            if (!currentHologram)
+            auto hologram = buildState->GetHologram();
+            if (!hologram)
             {
                 USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. No hologram in the build gun after sample. This shouldn't happen?"));
                 return;
             }
 
-            auto startingYaw = currentHologram->GetScrollRotateValue(); // Absolute yaw orientation in the world if it weren't snapped (but it might be snapped!)
-            USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. Hologram is a %s with yaw %d"), *currentHologram->GetClass()->GetName(), startingYaw);
-
-            auto degreesPerScroll = currentHologram->GetRotationStep();
-            if (degreesPerScroll != 0)
+            if (auto splineHologram = Cast<AFGSplineHologram>(hologram))
             {
-                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. Hologram rotation step is %d"), degreesPerScroll);
-            }
-            else
-            {
-                // If degrees per scroll is zero, it means the function was not implemented for the hologram in it's current state and we
-                // have to test and measure it.  We will scroll one time and measure how much that rotates
-                buildGun->Scroll(1);
-                auto updatedYaw = currentHologram->GetScrollRotateValue();
-                degreesPerScroll = updatedYaw - startingYaw;
-                if (degreesPerScroll < 0)
+                if (splineHologram->mBuildStep != ESplineHologramBuildStep::SHBS_FindStart)
                 {
-                    // if it's negative, we started in the positive and wrapped to the negative, so add 360 to bring it back to positive
-                    degreesPerScroll = degreesPerScroll + 360;
+                    // If we have advanced the build step in a spline hologram at all and sampled the same kind of spline, we will be here. We short-circuit because:
+                    //  1) Attempting to set the rotation of a supporting pole hologram that has already been anchored will turn it invisible and if the
+                    //     player finishes the construction, it will be an invisible, permanent actor that can't be fixed (as far as I can tell).
+                    //  2) That's what the game does, anyway - sampling the same kind of spline with your current spline in a non-starting build step is a no-op
+                    USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. Spline hologram is being built. Current state is %d so we're defaulting to no-op."), splineHologram->mBuildStep);
+                    return;
                 }
+            }
 
-                if (degreesPerScroll == 0)
+            // If there are no special cases, we'll set the rotation of the hologram using the default actor transform
+            FTransform desiredTransform = actor->GetActorTransform();
+            USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. Base actor transform is: %s"), *desiredTransform.ToHumanReadableString());
+
+            // The apis for these spline-based holograms all have similar APIs but they don't share a common type and have slightly different
+            // behavior, so we handle each case individually
+
+            // Conveyor belts (but not lifts!)
+            if (auto conveyorBelt = Cast<AFGBuildableConveyorBelt>(actor))
+            {
+                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled.\tConveyor belt"));
+
+                auto conveyorBeltHologram = Cast<AFGConveyorBeltHologram>(hologram);
+                if (!conveyorBeltHologram)
                 {
-                    USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. Degrees per scroll is %d! Unscrolling and exiting!"), degreesPerScroll);
-                    buildGun->Scroll(-1); // Undo the scroll we just did; it didn't give us any information
+                    USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled.\tSampled a conveyor belt but hologram wasn't a conveyor belt?"));
                     return;
                 }
 
-                startingYaw = updatedYaw;
+                auto hitResultOffset = conveyorBelt->FindOffsetClosestToLocation(hitResult.Location);
+                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled.\t Offset: %f "), hitResultOffset);
+                FVector outLocation;
+                FVector outDirection;
+                conveyorBelt->GetLocationAndDirectionAtOffset(hitResultOffset, outLocation, outDirection);
+                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled.\t Desired direction is: %s, which has a rotation of %s"), *outDirection.ToString(), *outDirection.Rotation().ToString());
 
-                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. Scrolled once. Hologram starting yaw is now %d and degrees per scroll is %d"), startingYaw, degreesPerScroll);
+                // The conveyor pole holograms seem to use an inverted direction from the sampled belts, so just multiply that direction vector by -1 before creating the rotation
+                auto conveyorPoleTransform = FTransform(
+                    (outDirection * -1).Rotation().Quaternion(),
+                    desiredTransform.GetTranslation(),
+                    desiredTransform.GetScale3D());
+
+                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled.\t Conveyor pole transform is: %s"), *conveyorPoleTransform.ToHumanReadableString());
+
+                // Set the rotation of the starting normal pole hologram, off of which the actual conveyor is modeled for ground conveyors
+                SetHologramRotationFromTransform(conveyorBeltHologram->mChildPoleHologram[0], conveyorPoleTransform);
+
+                // There are also ceiling pole holograms and wall pole holograms but we let them have the default behavior because:
+                //  1) Ceiling poles adjust their rotation based on the rotation of the foundation the player is looking at,
+                //     making it infeasible to reliably get them aligned with the originating conveyor.
+                //  2) Wall poles are binary but my tests have been confusing - they seem to set the rotation value in
+                //     increments of 10 but flip each time and I haven't seen a clear correlation between the desired
+                //     transform and which orientation they start in.
+                return;
             }
 
-            auto degreesFromDesiredYaw = desiredYaw - startingYaw;
-            auto result = std::div(degreesFromDesiredYaw, degreesPerScroll);
-            auto scrollCount = result.quot;
-            auto remainder = result.rem;
-            if (remainder > degreesPerScroll / 2 )
+            // Pipelines and hypertubes
+            if (auto buildablePipeBase = Cast<AFGBuildablePipeBase>(actor))
             {
-                scrollCount += 1;
-            }
-            else if (remainder < -degreesPerScroll / 2)
-            {
-                scrollCount -= 1;
+                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled.\tBuildable pipe base"));
+
+                // Both hypertubes and pipelines seem to use this hologram
+                auto buildablePipeHologram = Cast<AFGPipelineHologram>(hologram);
+                if (!buildablePipeHologram)
+                {
+                    USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled.\tSampled a pipe but hologram wasn't a pipe?"));
+                    return;
+                }
+
+                auto hitResultOffset = buildablePipeBase->FindOffsetClosestToLocation(hitResult.Location);
+                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled.\t Offset: %f "), hitResultOffset);
+                FVector outLocation;
+                FVector outDirection;
+                buildablePipeBase->GetLocationAndDirectionAtOffset(hitResultOffset, outLocation, outDirection);
+                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled.\t Desired direction is: %s, which has a rotation of %s"), *outDirection.ToString(), *outDirection.Rotation().ToString());
+                desiredTransform.SetRotation(outDirection.Rotation().Quaternion());
+                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled.\t New desired transform is: %s "), *desiredTransform.ToHumanReadableString());
+
+                // Set the rotation of the starting normal pole hologram, off of which the actual pipe is modeled for ground pipes
+                SetHologramRotationFromTransform(buildablePipeHologram->mChildPoleHologram[0], desiredTransform);
+
+                // There are also ceiling pole holograms and wall pole holograms but we let them have the default behavior because:
+                //  1) Ceiling poles adjust their rotation based on the rotation of the foundation the player is looking at,
+                //     making it infeasible to reliably get them aligned with the originating pipeline.
+                //  2) Wall pipe tests have been confusing and setting the desired transform just doesn't seem to work.
+                return;
             }
 
-            USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. Degrees from desired yaw is %d. Remainder was %d so final scroll count is %d."), degreesFromDesiredYaw, remainder, scrollCount);
-            if (scrollCount != 0)
+            // Railroads. They don't have any child holograms to worry about, but we do need to set the desired transform based on the tangent at
+            // the curve that was targeted
+            if (auto buildableRailroad = Cast<AFGBuildableRailroadTrack>(actor))
             {
-                buildGun->Scroll(scrollCount);
-                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. Scrolled %d times. Scroll rotate yaw is now: %d."), scrollCount, currentHologram->GetScrollRotateValue());
+                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled.\tRailroad"));
+                auto hitResultPosition = buildableRailroad->FindTrackPositionClosestToWorldLocation(hitResult.Location);
+                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled.\t Offset: %f "), hitResultPosition.Offset);
+                FVector outLocation;
+                FVector outDirection;
+                buildableRailroad->GetWorldLocationAndDirectionAtPosition(hitResultPosition, outLocation, outDirection);
+                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled.\t Desired direction is: %s, which has a rotation of %s"), *outDirection.ToString(), *outDirection.Rotation().ToString());
+                desiredTransform.SetRotation(outDirection.Rotation().Quaternion());
+                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled.\t New desired transform is: %s "), *desiredTransform.ToHumanReadableString());
             }
+
+            SetHologramRotationFromTransform(hologram, desiredTransform);
         });
 }
 
