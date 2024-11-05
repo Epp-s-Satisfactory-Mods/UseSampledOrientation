@@ -5,18 +5,20 @@
 #include "FGBuildGunBuild.h"
 #include "FGHologram.h"
 #include "FGLightweightBuildableSubsystem.h"
+#include "FGSplineBuildableInterface.h"
 #include "Patching/NativeHookManager.h"
 
 DEFINE_LOG_CATEGORY(LogUseSampledOrientation)
 
+// The mod template does this but we have no text to localize
 #define LOCTEXT_NAMESPACE "FUseSampledOrientationModule"
 
-// Set this to 1 before building to actually log debug messages, 0 to turn them into no-ops at compile time
-// I made this compile-time because I'm lazy, don't want to mess with log levels, and would prefer the shipping mod minimize perf impact.
-#define LOG_DEBUG_INFO 1
+// When we're building to ship, set this to 0 to no-op logging and minimize performance impact. Would prefer to do this through
+// build defines based on whether we're building for development or shipping but at the moment alpakit always builds shipping.
+#define USO_LOG_DEBUG_TEXT 1
 
-#if LOG_DEBUG_INFO
-#define USO_LOG(Verbosity, Format, ...) \
+#if USO_LOG_DEBUG_TEXT
+#define USO_LOG(Verbosity, Format, ...)\
     UE_LOG( LogUseSampledOrientation, Verbosity, Format, ##__VA_ARGS__ )
 #else
 #define USO_LOG(Verbosity, Format, ...)
@@ -34,7 +36,7 @@ void FUseSampledOrientationModule::StartupModule()
 
     SUBSCRIBE_METHOD(
         UFGBuildGunState::OnRecipeSampled,
-        [=](auto& scope, UFGBuildGunState* buildGunState, TSubclassOf<class UFGRecipe> recipe)
+        [](auto& scope, UFGBuildGunState* buildGunState, TSubclassOf<class UFGRecipe> recipe)
         {
             USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled!"));
 
@@ -61,15 +63,17 @@ void FUseSampledOrientationModule::StartupModule()
                 }
             }
 
-            if (!actor || Cast<AFGLightweightBuildableSubsystem>(actor) != nullptr )
+            if (!actor || Cast<AFGLightweightBuildableSubsystem>(actor) != nullptr || Cast<IFGSplineBuildableInterface>(actor) != nullptr)
             {
-                // Either we couldn't resolve the actor or it's a lightweight buildable, like a foundation or a wall.
+                // Either we couldn't resolve the actor or it's a lightweight buildable (like a foundation or a wall) or a spline (like a conveyor or pipeline).
                 // We'll just use the default behavior for all of these cases, because trying to align them with the sampled object is weird and usually unnecessary.
                 // - Foundations seem to have binary "snap staight or snap diagonal" behavior, instances in the world have inconsistent and changing yaws, and trying
                 //   to align automatically according to the game's internal values results in the "snap diagonal" behavior, which is the opposite of what we often want.
                 // - Walls must snap to foundations or other walls and do so readily no matter their rotation, so it usually doesn't matter at all and trying to "align"
-                //   while snapped doesn't alter them anyway
-                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. No resolved actor or it's a lightweight buildable, like a foundation or a wall, so using default behavior."));
+                //   while snapped doesn't alter them anyway.
+                // - Splines don't have a set orientation and how to find the orientation at a specific point is not at all clear to me from looking at the headers. It's
+                //   also largely not necessary because these are usually built by snapping between points anyway. In any case, default behavior isn't that bad.
+                USO_LOG(Verbose, TEXT("UFGBuildGunState::OnRecipeSampled. Actor is %s, which is a special case we can't handle. Falling back to default behavior."), *actor->GetClass()->GetName());
                 scope(buildGunState, recipe);
                 return;
             }
@@ -151,6 +155,7 @@ void FUseSampledOrientationModule::StartupModule()
 }
 
 #undef USO_LOG
+#undef USO_LOG_DEBUG_TEXT
 #undef LOCTEXT_NAMESPACE
 
 IMPLEMENT_MODULE(FUseSampledOrientationModule, UseSampledOrientation)
