@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
 	"Version": 0,
-	"VersionName": "0.2.0",
+	"VersionName": "0.2.1",
 	"FriendlyName": "Use Sampled Orientation",
 	"Description": "When sampling, holograms take the orientation of the sampled object.",
 	"Category": "Modding",
@@ -33,6 +33,6 @@
 			"BasePlugin": true
 		}
 	],
-	"SemVersion": "0.2.0",
+	"SemVersion": "0.2.1",
 	"GameVersion": ">=365306"
 }
