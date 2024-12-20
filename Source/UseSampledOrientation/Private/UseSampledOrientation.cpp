@@ -23,7 +23,7 @@ DEFINE_LOG_CATEGORY(LogUseSampledOrientation)
 
 // When we're building to ship, set this to 0 to no-op logging and minimize performance impact. Would prefer to do this through
 // build defines based on whether we're building for development or shipping but at the moment alpakit always builds shipping.
-#define USO_LOG_DEBUG_TEXT 1
+#define USO_LOG_DEBUG_TEXT 0
 
 #if USO_LOG_DEBUG_TEXT
 #define USO_LOG(Verbosity, Format, ...)\
