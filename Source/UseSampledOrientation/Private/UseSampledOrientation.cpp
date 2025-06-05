@@ -11,7 +11,7 @@
 #include "FGHologram.h"
 #include "FGLightweightBuildableSubsystem.h"
 #include "FGPipelineHologram.h"
-#include "FGPipelineSupportHologram.h"
+#include "FGPipelinePoleHologram.h"
 #include "FGSplineHologram.h"
 #include "FGWallAttachmentHologram.h"
 #include "Patching/NativeHookManager.h"
